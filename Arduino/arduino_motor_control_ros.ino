@@ -1,43 +1,35 @@
-j//differential drive motor control for rosserial
-#include <Encoder.h>
-#include <ArduinoHardware.h>
-#include <PID_v1.h>
-#include <ros.h>
-#include <geometry_msgs/Twist.h>
-#include <std_msgs/String.h>
-#include <geometry_msgs/Vector3Stamped.h>
-#include <ros/time.h>
-
-
-#define ENC_CPR 4741 //Motor Encoder's counts per revoluation, as given by the manufacturer
+#define LOOPTIME 100 //100 miliseconds
 #define EN_L 5
 #define IN1_L 7
 #define IN2_L 6
  
 #define EN_R 10
-#define IN1_R 9
-#define IN2_R 8
+#define IN1_R 8
+#define IN2_R 9
 
+const double ENC_CPR = 4741; //Motor Encoder's counts per revoluation, as given by the manufacturer
+
+double mod = .145; //modifier need to match demand and actual speeds
 // --- Robot Constants ---
 const double wheelRadius = .06; //Wheel Radius in m, 120 mm diameter
-const double wheelSeparation = .140; //Wheel Distance from center of motors
+const double wheelSeparation = .280; //Wheel Distance from center of motors
 
 //encoder pins, CARTMAN uses an arduino uno, which only has two interrupt pins (2&3)
-Encoder encL(3,12);
-Encoder encR(2,11);
+Encoder encL(3,19);
+Encoder encR(2,18);
 
 //PID Motor Control
 //motor L
-double pkL = 1;
+double pkL = .1;
 double ikL = 0;
-double dkL = 0.02;
+double dkL = 0.002;
 
 double setpointL, inputL, outputL, outputBL;
 PID PIDL(&inputL, &outputL, &setpointL, pkL, ikL, dkL, DIRECT);
 //motor R
-double pkR = 1;
+double pkR = .1;
 double ikR = 0;
-double dkR = 0.02;
+double dkR = 0.002;
 
 double setpointR, inputR, outputR, outputBR;
 PID PIDR(&inputR, &outputR, &setpointR, pkR, ikR, dkR, DIRECT);
@@ -47,8 +39,8 @@ float demandR;
 float x;
 float z;
 
-double velocityL;
-double velocityR;
+double speed_act_left = 0;
+double speed_act_right = 0;
 
 unsigned long currentMillis;
 unsigned long previousMillis;
@@ -71,15 +63,20 @@ void messageCb( const geometry_msgs::Twist& msg)
 {
   z = msg.angular.z;
   x = msg.linear.x;
+
+  demandL =  (x - (z*(wheelSeparation/2)))/mod;
+  demandR =  (x + (z*(wheelSeparation/2)))/mod;
+    
+  nh.spinOnce();
 }
 
 ros::Subscriber<geometry_msgs::Twist> sub("cmd_vel", &messageCb );
 geometry_msgs::Vector3Stamped speed_msg;
-ros::Publisher speed_pub("Speed", &speed_msg);
+ros::Publisher speed_pub("speed", &speed_msg);
 void setup() {
-
-  nh.initNode();
+  
   nh.getHardware()->setBaud(57600);
+  nh.initNode();
   nh.subscribe(sub);
   nh.advertise(speed_pub);
   
@@ -89,17 +86,14 @@ void setup() {
   pinMode(IN2_R, OUTPUT);
   pinMode(EN_L, OUTPUT);
   pinMode(EN_R, OUTPUT);
-  
-  Serial.begin(9600);
-  Serial.println("Encoder Test:");
 
   PIDL.SetMode(AUTOMATIC);
   PIDL.SetOutputLimits(-255, 255);
-  PIDL.SetSampleTime(10);
+  PIDL.SetSampleTime(LOOPTIME);
 
   PIDR.SetMode(AUTOMATIC);
   PIDR.SetOutputLimits(-255, 255);
-  PIDR.SetSampleTime(10);
+  PIDR.SetSampleTime(LOOPTIME);
 
 }
 
@@ -107,48 +101,44 @@ void loop() {
   
   nh.spinOnce();
   
-  encPosL = encL.read();
-  encPosR = encR.read();
-  // if a character is sent from the serial monitor,
-  // reset both back to zero.
   currentMillis = millis();
 
-  if(currentMillis - previousMillis >= 10){
+  if(currentMillis - previousMillis >= LOOPTIME){
 
+    encPosL = encL.read();
+    encPosR = encR.read();
+    
     previousMillis = currentMillis;
-
-    demandL =  x - (z*(wheelSeparation/2));
-    demandR =  x + (z*(wheelSeparation/2));
 
     encDiffL = encPosL - encPreL;
     encDiffR = encPosR - encPreR;
 
-    encErrL = (demandL*165) - encDiffL; //118 
-    encErrR = (demandR*125) - encDiffR;
+    encErrL = (demandL*1256 - encDiffL); //118 
+    encErrR = (demandR*1256 - encDiffR);
 
-    setpointL = demandL * 165; //encoder has 118 counts per 10ms to achieve 1m/s
+    setpointL = demandL * 1256;//encoder has 118 counts per 10ms to achieve 1m/s
     inputL = encDiffL;
     PIDL.Compute();
 
-    setpointR = demandR * 125;
+    setpointR = demandR * 1256;
     inputR = encDiffR;
     PIDR.Compute();
 
     //compute actual velocity
     if(abs(encPosL - encPreL) < 5){
-      velocityL = 0;
+      speed_act_left = 0;
     }else{
-      velocityL = (((encPosL - encPreL)/ENC_CPR)*2*PI)*100*wheelRadius;
+      speed_act_left = ((encDiffL/ENC_CPR)*2*PI)*(1000/LOOPTIME)*wheelRadius;
     }
       if(abs(encPosR - encPreR) < 5){
-      velocityR = 0;
+      speed_act_right = 0;
     }else{
-      velocityR = (((encPosL - encPreL)/ENC_CPR)*2*PI)*100*wheelRadius;
+      speed_act_right = ((encDiffR/ENC_CPR)*2*PI)*(1000/LOOPTIME)*wheelRadius;
     }
 
     encPreL = encPosL;
     encPreR = encPosR;
-   }
+   
 
    //drive motor
   if(outputL > 0) 
@@ -193,15 +183,16 @@ void loop() {
     analogWrite(EN_R, 0); 
   }
 
-  publishSpeed(100);
+  publishSpeed(LOOPTIME);
+  }
 }
 
 void publishSpeed(double time)
 {
   speed_msg.header.stamp = nh.now();
-  speed_msg.vector.x = velocityL;
-  speed_msg.vector.y = velocityR;
-  speed_msg.vector.z = 100;
+  speed_msg.vector.x = speed_act_left;
+  speed_msg.vector.y = speed_act_right;
+  speed_msg.vector.z = time/1000; //looptime in seconds
   speed_pub.publish(&speed_msg);
   nh.spinOnce();
   nh.loginfo("Publishing odometry");
