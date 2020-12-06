@@ -116,9 +116,9 @@ void loop() {
     encErrL = (demandL*1256 - encDiffL); //118 
     encErrR = (demandR*1256 - encDiffR);
 
-    setpointL = demandL * 1256;//encoder has 118 counts per 10ms to achieve 1m/s
-    inputL = encDiffL;
-    PIDL.Compute();
+    setpointL = demandL * 1257;//encoder has 1257 counts per 100ms to achieve 1m/s
+    inputL = encDiffL; //encoder counts, encDiff = previous count - current count
+    PIDL.Compute(); //compute the needed pwm value to match the demanded speed
 
     setpointR = demandR * 1256;
     inputR = encDiffR;
